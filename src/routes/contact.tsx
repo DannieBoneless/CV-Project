@@ -1,0 +1,5 @@
+import { createFileRoute } from "@tanstack/react-router";
+import { MarketingShell } from "@/components/marketing-shell";
+export const Route = createFileRoute("/contact")({ component: () => (
+  <MarketingShell><div className="mx-auto max-w-xl px-4 py-16"><h1 className="text-4xl font-bold">Contact us</h1><form onSubmit={(e) => { e.preventDefault(); alert("Message sent"); }} className="mt-6 glass rounded-2xl p-5 space-y-3"><input required placeholder="Your name" className="w-full rounded-lg border bg-background px-3 py-2 text-sm" /><input required type="email" placeholder="Email" className="w-full rounded-lg border bg-background px-3 py-2 text-sm" /><textarea required placeholder="Message" className="h-32 w-full rounded-lg border bg-background px-3 py-2 text-sm" /><button className="w-full rounded-xl gradient-primary py-3 font-medium text-primary-foreground">Send</button></form></div></MarketingShell>
+) });
