@@ -36,3 +36,5 @@ dist-ssr
 
 # Netlify build output
 .netlify
+
+supabase/.temp
