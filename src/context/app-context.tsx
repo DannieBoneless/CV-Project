@@ -1,15 +1,10 @@
 /**
  * AppContext — the single source of truth for auth, wallet, investments,
- * transactions, notifications and theme. Backed by localStorage today.
+ * transactions, notifications and theme.
  *
- * Architecture note (future Supabase swap):
- * - All mutations are async and return Promises.
- * - No mutation runs on a background timer; every balance/tx change is the
- *   result of an explicit user action (or, in the future, an admin action
- *   performed server-side).
- * - Persistence is isolated to the persist* helpers below. Swapping to
- *   Supabase means replacing those helpers + login/register with SDK calls
- *   and subscribing to Realtime — the UI does not need to change.
+ * Balances, transactions, goals, loans, trades, and notifications are now
+ * backed by Supabase. buyVault, storePurchase, sendToUser, and externalSend
+ * remain on localStorage for now (no matching tables / cross-user lookup yet).
  */
 import {
   createContext,
@@ -27,7 +22,7 @@ export type Balances = { main: number; savings: number; investment: number };
 export type Wallet = "main" | "savings" | "investment";
 
 export interface User {
-  id: string; // = email
+  id: string; // = auth user id
   email: string;
   password: string;
   firstName: string;
@@ -209,6 +204,72 @@ async function buildUserFromSupabase(authUser: {
   };
 }
 
+async function insertTx(userId: string, tx: {
+  type: string; amount: number; category?: string; status?: string;
+  note?: string; ref?: string; counterparty?: string; metadata?: Record<string, unknown>;
+}) {
+  await supabase.from("transactions").insert({
+    user_id: userId,
+    type: tx.type,
+    amount: tx.amount,
+    category: tx.category,
+    status: tx.status ?? "success",
+    note: tx.note,
+    ref: tx.ref,
+    counterparty: tx.counterparty,
+    metadata: tx.metadata ?? {},
+  });
+}
+
+async function updateBalances(userId: string, patch: Partial<{ main: number; savings: number; investment: number }>) {
+  const { data } = await supabase
+    .from("balances")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("user_id", userId)
+    .select()
+    .maybeSingle();
+  return data;
+}
+
+async function loadUserData(userId: string) {
+  const [{ data: goalRows }, { data: loanRows }, { data: tradeRows }, { data: notifRows }, { data: txRows }] = await Promise.all([
+    supabase.from("goals").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+    supabase.from("loans").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+    supabase.from("trades").select("*").eq("user_id", userId).order("opened_at", { ascending: false }),
+    supabase.from("notifications").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+    supabase.from("transactions").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+  ]);
+
+  const goals: Goal[] = (goalRows ?? []).map((g: any) => ({
+    id: g.id, name: g.name, target: g.target, saved: g.current, status: g.status,
+    mode: g.mode, createdAt: g.created_at, history: [],
+    dueDate: g.metadata?.dueDate, description: g.metadata?.description, autoAmount: g.metadata?.autoAmount,
+  }));
+
+  const loans: Loan[] = (loanRows ?? []).map((l: any) => ({
+    id: l.id, amount: l.amount_requested, purpose: l.purpose, termMonths: l.term_months,
+    apr: l.metadata?.apr ?? 12, status: l.status, submittedAt: l.created_at,
+    remaining: l.metadata?.remaining ?? l.amount_requested, monthlyPayment: l.metadata?.monthlyPayment ?? 0,
+    payments: l.metadata?.payments ?? [], personal: l.metadata?.personal ?? {}, finances: l.metadata?.finances,
+    docs: l.metadata?.docs, bank: l.metadata?.bank,
+  }));
+
+  const trades: Trade[] = (tradeRows ?? []).map((t: any) => ({
+    id: t.id, sym: t.asset, name: t.asset, side: t.side, qty: t.qty, openPrice: t.entry_price,
+    openAt: t.opened_at, status: t.status, closePrice: t.exit_price, closeAt: t.closed_at, pnl: t.pnl,
+  }));
+
+  const notifs: Notif[] = (notifRows ?? []).map((n: any) => ({
+    id: n.id, title: n.title, message: n.body, read: n.read, at: n.created_at,
+  }));
+
+  const txs: Tx[] = (txRows ?? []).map((t: any) => ({
+    id: t.id, ref: t.ref ?? "", type: t.type, amount: t.amount, status: t.status, note: t.note ?? "", at: t.created_at,
+  }));
+
+  return { goals, loans, trades, notifs, txs };
+}
+
 const K = {
   users: "cv.users",
   session: "cv.session",
@@ -311,12 +372,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const u = await buildUserFromSupabase(session.user);
         if (u) {
           setUser(u);
-          setTxs(ls(K.tx(u.id), []));
           setVaults(ls(K.vaults(u.id), []));
-          setNotifs(ls(K.notifs(u.id), []));
-          setTrades(ls(K.trades(u.id), []));
-          setGoals(ls(K.goals(u.id), []));
-          setLoans(ls(K.loans(u.id), []));
+          const { goals, loans, trades, notifs, txs } = await loadUserData(u.id);
+          setGoals(goals);
+          setLoans(loans);
+          setTrades(trades);
+          setNotifs(notifs);
+          setTxs(txs);
         }
       }
       setReady(true);
@@ -350,6 +412,82 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => { supabase.removeChannel(channel); };
   }, [user?.id]);
 
+  // Realtime: reflect goals/loans/trades/notifications edits made in Supabase live
+  useEffect(() => {
+    if (!user) return;
+    const uid = user.id;
+
+    const mapGoal = (g: any): Goal => ({
+      id: g.id, name: g.name, target: g.target, saved: g.current, status: g.status,
+      mode: g.mode, createdAt: g.created_at, history: [],
+      dueDate: g.metadata?.dueDate, description: g.metadata?.description, autoAmount: g.metadata?.autoAmount,
+    });
+    const mapLoan = (l: any): Loan => ({
+      id: l.id, amount: l.amount_requested, purpose: l.purpose, termMonths: l.term_months,
+      apr: l.metadata?.apr ?? 12, status: l.status, submittedAt: l.created_at,
+      remaining: l.metadata?.remaining ?? l.amount_requested, monthlyPayment: l.metadata?.monthlyPayment ?? 0,
+      payments: l.metadata?.payments ?? [], personal: l.metadata?.personal ?? {}, finances: l.metadata?.finances,
+      docs: l.metadata?.docs, bank: l.metadata?.bank,
+    });
+    const mapTrade = (t: any): Trade => ({
+      id: t.id, sym: t.asset, name: t.asset, side: t.side, qty: t.qty, openPrice: t.entry_price,
+      openAt: t.opened_at, status: t.status, closePrice: t.exit_price, closeAt: t.closed_at, pnl: t.pnl,
+    });
+    const mapNotif = (n: any): Notif => ({
+      id: n.id, title: n.title, message: n.body, read: n.read, at: n.created_at,
+    });
+
+    const channel = supabase
+      .channel("app-data-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "goals", filter: `user_id=eq.${uid}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setGoals((prev) => prev.filter((g) => g.id !== (payload.old as any).id));
+        } else {
+          const row = mapGoal(payload.new);
+          setGoals((prev) => {
+            const exists = prev.some((g) => g.id === row.id);
+            return exists ? prev.map((g) => (g.id === row.id ? { ...row, history: g.history } : g)) : [row, ...prev];
+          });
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "loans", filter: `user_id=eq.${uid}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setLoans((prev) => prev.filter((l) => l.id !== (payload.old as any).id));
+        } else {
+          const row = mapLoan(payload.new);
+          setLoans((prev) => {
+            const exists = prev.some((l) => l.id === row.id);
+            return exists ? prev.map((l) => (l.id === row.id ? row : l)) : [row, ...prev];
+          });
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "trades", filter: `user_id=eq.${uid}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setTrades((prev) => prev.filter((t) => t.id !== (payload.old as any).id));
+        } else {
+          const row = mapTrade(payload.new);
+          setTrades((prev) => {
+            const exists = prev.some((t) => t.id === row.id);
+            return exists ? prev.map((t) => (t.id === row.id ? row : t)) : [row, ...prev];
+          });
+        }
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "notifications", filter: `user_id=eq.${uid}` }, (payload) => {
+        if (payload.eventType === "DELETE") {
+          setNotifs((prev) => prev.filter((n) => n.id !== (payload.old as any).id));
+        } else {
+          const row = mapNotif(payload.new);
+          setNotifs((prev) => {
+            const exists = prev.some((n) => n.id === row.id);
+            return exists ? prev.map((n) => (n.id === row.id ? row : n)) : [row, ...prev];
+          });
+        }
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, [user?.id]);
+
   const persistUser = useCallback((u: User) => {
     const all = loadUsers();
     all[u.id] = u;
@@ -357,10 +495,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUser({ ...u });
   }, []);
 
-  const persistTx = useCallback((id: string, next: Tx[]) => {
-    localStorage.setItem(K.tx(id), JSON.stringify(next));
-    setTxs(next);
-  }, []);
   const persistVaults = useCallback((id: string, next: Vault[]) => {
     localStorage.setItem(K.vaults(id), JSON.stringify(next));
     setVaults(next);
@@ -368,18 +502,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const persistNotifs = useCallback((id: string, next: Notif[]) => {
     localStorage.setItem(K.notifs(id), JSON.stringify(next));
     setNotifs(next);
-  }, []);
-  const persistTrades = useCallback((id: string, next: Trade[]) => {
-    localStorage.setItem(K.trades(id), JSON.stringify(next));
-    setTrades(next);
-  }, []);
-  const persistGoals = useCallback((id: string, next: Goal[]) => {
-    localStorage.setItem(K.goals(id), JSON.stringify(next));
-    setGoals(next);
-  }, []);
-  const persistLoans = useCallback((id: string, next: Loan[]) => {
-    localStorage.setItem(K.loans(id), JSON.stringify(next));
-    setLoans(next);
   }, []);
 
   const shortRef = () => "CV-" + Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -390,8 +512,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       id: crypto.randomUUID(),
       at: new Date().toISOString(),
     };
-    const next = [entry, ...ls<Tx[]>(K.tx(u.id), [])];
-    persistTx(u.id, next);
+    setTxs((prev) => [entry, ...prev]);
   };
   const pushNotif = (u: User, n: Omit<Notif, "id" | "at" | "read">) => {
     const next = [
@@ -414,12 +535,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const u = await buildUserFromSupabase(data.user);
     if (!u) throw new Error("Could not load account");
     setUser(u);
-    setTxs(ls(K.tx(u.id), []));
     setVaults(ls(K.vaults(u.id), []));
-    setNotifs(ls(K.notifs(u.id), []));
-    setTrades(ls(K.trades(u.id), []));
-    setGoals(ls(K.goals(u.id), []));
-    setLoans(ls(K.loans(u.id), []));
+    const { goals, loans, trades, notifs, txs } = await loadUserData(u.id);
+    setGoals(goals);
+    setLoans(loans);
+    setTrades(trades);
+    setNotifs(notifs);
+    setTxs(txs);
     return u;
   };
 
@@ -445,6 +567,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUser(u);
     setTxs([]);
     setVaults([]);
+    setGoals([]);
+    setLoans([]);
+    setTrades([]);
     const welcome: Notif = {
       id: crypto.randomUUID(),
       title: "Welcome to CrestVest",
@@ -472,16 +597,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (from === to) throw new Error("Choose different accounts");
     if (amount <= 0) throw new Error("Enter a valid amount");
     if (user.balances[from] < amount) throw new Error("Insufficient balance");
-    const next: User = {
-      ...user,
-      balances: {
-        ...user.balances,
-        [from]: user.balances[from] - amount,
-        [to]: user.balances[to] + amount,
-      },
+    const nextBalances = {
+      ...user.balances,
+      [from]: user.balances[from] - amount,
+      [to]: user.balances[to] + amount,
     };
-    persistUser(next);
-    pushTx(next, { type: "transfer", amount, from, to, status: "completed", note: `Internal ${from} → ${to}` });
+    const row = await updateBalances(user.id, nextBalances);
+    if (!row) throw new Error("Failed to update balance");
+    setUser({ ...user, balances: nextBalances });
+    await insertTx(user.id, { type: "transfer", amount, category: `${from}->${to}`, note: `Internal ${from} → ${to}` });
+    pushTx(user, { type: "transfer", amount, from, to, status: "completed", note: `Internal ${from} → ${to}` });
   };
 
   const sendToUser: Ctx["sendToUser"] = async (email, amount) => {
@@ -503,7 +628,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const externalSend: Ctx["externalSend"] = async (recipient, bank, userEmail, amount) => {
     if (!user) throw new Error("Not signed in");
     if (userEmail.toLowerCase() !== user.email) throw new Error("Email must match your account email");
-    // Record as pending; a future admin/backend flow will finalize.
     pushTx(user, {
       type: "external_send",
       amount,
@@ -520,12 +644,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const deposit: Ctx["deposit"] = async (method, amount) => {
     if (!user) throw new Error("Not signed in");
+    await insertTx(user.id, {
+      type: "deposit", amount, status: "pending",
+      note: `${method} deposit — pending verification`, category: method,
+    });
     pushTx(user, {
-      type: "deposit",
-      amount,
-      to: "main",
-      status: "pending",
+      type: "deposit", amount, to: "main", status: "pending",
       note: `${method} deposit — pending verification`,
+    });
+    await supabase.from("notifications").insert({
+      user_id: user.id,
+      title: "Deposit Received",
+      body: `Your ${method} deposit is pending verification. Send proof via WhatsApp to speed up.`,
     });
     pushNotif(user, {
       title: "Deposit Received",
@@ -566,41 +696,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
     pushTx(next, { type: "store", amount, status: "completed", note: `Store: ${item}` });
   };
 
-  const markAllNotifsRead = () => {
+  const markAllNotifsRead = async () => {
     if (!user) return;
-    const next = notifs.map((n) => ({ ...n, read: true }));
-    persistNotifs(user.id, next);
+    await supabase.from("notifications").update({ read: true }).eq("user_id", user.id).eq("read", false);
+    setNotifs((prev) => prev.map((n) => ({ ...n, read: true })));
   };
 
   const addFundsToInvest: Ctx["addFundsToInvest"] = async (amount) => {
     if (!user) throw new Error("Not signed in");
     if (user.balances.main < amount) throw new Error("Insufficient main balance");
-    const next: User = {
-      ...user,
-      balances: {
-        ...user.balances,
-        main: user.balances.main - amount,
-        investment: user.balances.investment + amount,
-      },
+    const nextBalances = {
+      ...user.balances,
+      main: user.balances.main - amount,
+      investment: user.balances.investment + amount,
     };
-    persistUser(next);
-    pushTx(next, { type: "invest-transfer", amount, from: "main", to: "investment", status: "completed", note: "Main → Investment" });
+    const row = await updateBalances(user.id, nextBalances);
+    if (!row) throw new Error("Failed to update balance");
+    setUser({ ...user, balances: nextBalances });
+    await insertTx(user.id, { type: "invest-transfer", amount, category: "main->investment", note: "Main → Investment" });
+    pushTx(user, { type: "invest-transfer", amount, from: "main", to: "investment", status: "completed", note: "Main → Investment" });
   };
 
   const moveInvestToMain: Ctx["moveInvestToMain"] = async (amount) => {
     if (!user) throw new Error("Not signed in");
     if (amount <= 0) throw new Error("Enter a valid amount");
     if (user.balances.investment < amount) throw new Error("Insufficient investment balance");
-    const next: User = {
-      ...user,
-      balances: {
-        ...user.balances,
-        investment: user.balances.investment - amount,
-        main: user.balances.main + amount,
-      },
+    const nextBalances = {
+      ...user.balances,
+      investment: user.balances.investment - amount,
+      main: user.balances.main + amount,
     };
-    persistUser(next);
-    pushTx(next, { type: "invest-transfer", amount, from: "investment", to: "main", status: "completed", note: "Investment → Main" });
+    const row = await updateBalances(user.id, nextBalances);
+    if (!row) throw new Error("Failed to update balance");
+    setUser({ ...user, balances: nextBalances });
+    await insertTx(user.id, { type: "invest-transfer", amount, category: "investment->main", note: "Investment → Main" });
+    pushTx(user, { type: "invest-transfer", amount, from: "investment", to: "main", status: "completed", note: "Investment → Main" });
   };
 
   const openTrade: Ctx["openTrade"] = async ({ sym, name, side, qty, price }) => {
@@ -608,50 +738,73 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (qty <= 0) throw new Error("Quantity must be greater than 0");
     const cost = qty * price;
     if (user.balances.investment < cost) throw new Error("Insufficient investment cash. Move funds from Main first.");
-    const next: User = {
-      ...user,
-      balances: { ...user.balances, investment: user.balances.investment - cost },
-    };
-    persistUser(next);
+    const nextBalances = { ...user.balances, investment: user.balances.investment - cost };
+    const balRow = await updateBalances(user.id, nextBalances);
+    if (!balRow) throw new Error("Failed to update balance");
+    setUser({ ...user, balances: nextBalances });
+
+    const { data: tradeRow } = await supabase
+      .from("trades")
+      .insert({ user_id: user.id, asset: sym, side, qty, entry_price: price, status: "open" })
+      .select()
+      .maybeSingle();
+
     const t: Trade = {
-      id: crypto.randomUUID(), sym, name, side, qty, openPrice: price,
-      openAt: new Date().toISOString(), status: "open",
+      id: tradeRow!.id, sym, name, side, qty, openPrice: price,
+      openAt: tradeRow!.opened_at, status: "open",
     };
-    persistTrades(next.id, [t, ...ls<Trade[]>(K.trades(next.id), [])]);
-    pushTx(next, { type: "trade-open", amount: cost, from: "investment", status: "completed", note: `${side.toUpperCase()} ${qty} ${sym} @ $${price.toFixed(2)}`, tradeId: t.id });
+    setTrades((prev) => [t, ...prev]);
+
+    await insertTx(user.id, {
+      type: "trade-open", amount: cost, category: "investment",
+      note: `${side.toUpperCase()} ${qty} ${sym} @ $${price.toFixed(2)}`,
+      metadata: { trade_id: t.id },
+    });
+    pushTx(user, { type: "trade-open", amount: cost, from: "investment", status: "completed", note: `${side.toUpperCase()} ${qty} ${sym} @ $${price.toFixed(2)}`, tradeId: t.id });
   };
 
   const closeTrade: Ctx["closeTrade"] = async (id, currentPrice) => {
     if (!user) throw new Error("Not signed in");
-    const all = ls<Trade[]>(K.trades(user.id), []);
-    const t = all.find((x) => x.id === id);
+    const t = trades.find((x) => x.id === id);
     if (!t || t.status !== "open") throw new Error("Trade not found");
     const gross = t.qty * currentPrice;
     const cost = t.qty * t.openPrice;
     const rawPnl = gross - cost;
-    // Buy: profit when price rose. Sell (short): profit when price fell.
     const pnl = t.side === "buy" ? rawPnl : -rawPnl;
     const pnlPct = (pnl / cost) * 100;
-    const proceeds = cost + pnl; // return principal + realized pnl to investment cash
-    const closed: Trade = {
-      ...t, status: "closed", closePrice: currentPrice,
-      closeAt: new Date().toISOString(), pnl, pnlPct,
-    };
-    const nextTrades = all.map((x) => (x.id === id ? closed : x));
-    const nextUser: User = {
-      ...user,
-      balances: { ...user.balances, investment: user.balances.investment + Math.max(0, proceeds) },
-    };
-    persistUser(nextUser);
-    persistTrades(nextUser.id, nextTrades);
-    pushTx(nextUser, {
-      type: "trade-close", amount: Math.abs(pnl),
-      to: "investment",
+    const proceeds = Math.max(0, cost + pnl);
+
+    await supabase
+      .from("trades")
+      .update({ status: "closed", exit_price: currentPrice, pnl, closed_at: new Date().toISOString() })
+      .eq("id", id);
+
+    const nextBalances = { ...user.balances, investment: user.balances.investment + proceeds };
+    await updateBalances(user.id, nextBalances);
+    setUser({ ...user, balances: nextBalances });
+
+    setTrades((prev) => prev.map((x) => x.id === id ? {
+      ...x, status: "closed", closePrice: currentPrice, closeAt: new Date().toISOString(), pnl, pnlPct,
+    } : x));
+
+    await insertTx(user.id, {
+      type: "trade-close", amount: Math.abs(pnl), category: "investment",
+      status: pnl >= 0 ? "success" : "failed",
+      note: `Closed ${t.side.toUpperCase()} ${t.qty} ${t.sym} · ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)} (${pnlPct.toFixed(2)}%)`,
+      metadata: { trade_id: id },
+    });
+    pushTx(user, {
+      type: "trade-close", amount: Math.abs(pnl), to: "investment",
       status: pnl >= 0 ? "completed" : "failed",
       note: `Closed ${t.side.toUpperCase()} ${t.qty} ${t.sym} · ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)} (${pnlPct.toFixed(2)}%)`,
-      tradeId: t.id,
+      tradeId: id,
     });
-    pushNotif(nextUser, {
+    await supabase.from("notifications").insert({
+      user_id: user.id,
+      title: pnl >= 0 ? "Trade closed — profit" : "Trade closed — loss",
+      body: `${t.sym}: ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)} (${pnlPct.toFixed(2)}%)`,
+    });
+    pushNotif(user, {
       title: pnl >= 0 ? "Trade closed — profit" : "Trade closed — loss",
       message: `${t.sym}: ${pnl >= 0 ? "+" : "-"}$${Math.abs(pnl).toFixed(2)} (${pnlPct.toFixed(2)}%)`,
     });
@@ -661,161 +814,170 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!user) throw new Error("Not signed in");
     if (!input.name.trim()) throw new Error("Give your goal a name");
     if (input.target <= 0) throw new Error("Target must be greater than 0");
-    const goal: Goal = {
-      id: crypto.randomUUID(),
-      name: input.name.trim(),
-      target: input.target,
-      dueDate: input.dueDate,
-      description: input.description,
-      mode: input.mode,
-      autoAmount: input.autoAmount,
-      saved: 0,
-      status: "active",
-      createdAt: new Date().toISOString(),
-      lastRunAt: new Date().toISOString(),
-      history: [],
-    };
-    let nextUser = user;
-    let nextGoal = goal;
+
+    let current = 0;
+    let status: GoalStatus = "active";
+    const nextBalances = { ...user.balances };
+
     if (input.mode === "one-time") {
       if (user.balances.main < input.target) throw new Error("Insufficient main balance for one-time deposit");
-      nextUser = { ...user, balances: { ...user.balances, main: user.balances.main - input.target } };
-      nextGoal = {
-        ...goal, saved: input.target, status: "completed",
-        history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount: input.target, type: "deposit" }],
-      };
+      nextBalances.main -= input.target;
+      current = input.target;
+      status = "completed";
     } else if (input.initialDeposit && input.initialDeposit > 0) {
       if (user.balances.main < input.initialDeposit) throw new Error("Insufficient main balance");
-      nextUser = { ...user, balances: { ...user.balances, main: user.balances.main - input.initialDeposit, savings: user.balances.savings + input.initialDeposit } };
-      nextGoal = {
-        ...goal, saved: input.initialDeposit,
-        history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount: input.initialDeposit, type: "deposit" }],
-      };
+      nextBalances.main -= input.initialDeposit;
+      nextBalances.savings += input.initialDeposit;
+      current = input.initialDeposit;
     }
-    if (input.mode !== "one-time") {
-      nextUser = { ...nextUser, balances: { ...nextUser.balances, savings: nextUser.balances.savings + (nextGoal.saved - goal.saved) } };
+
+    if (current > 0) await updateBalances(user.id, nextBalances);
+    setUser({ ...user, balances: nextBalances });
+
+    const { data: row } = await supabase
+      .from("goals")
+      .insert({
+        user_id: user.id, name: input.name.trim(), target: input.target,
+        current, mode: input.mode, cadence: input.mode === "one-time" ? null : input.mode,
+        status, metadata: { dueDate: input.dueDate, description: input.description, autoAmount: input.autoAmount },
+      })
+      .select()
+      .maybeSingle();
+
+    const goal: Goal = {
+      id: row!.id, name: input.name, target: input.target, dueDate: input.dueDate,
+      description: input.description, saved: current, status, mode: input.mode,
+      autoAmount: input.autoAmount, createdAt: row!.created_at, lastRunAt: row!.created_at,
+      history: current > 0 ? [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount: current, type: "deposit" }] : [],
+    };
+    setGoals((prev) => [goal, ...prev]);
+
+    await insertTx(user.id, { type: "goal-created", amount: input.target, note: `Goal created: ${goal.name}`, metadata: { goal_id: goal.id } });
+    pushTx(user, { type: "goal-created", amount: input.target, status: "completed", note: `Goal created: ${goal.name}`, goalId: goal.id });
+    if (status === "completed") {
+      await insertTx(user.id, { type: "goal-completed", amount: current, note: `Goal completed: ${goal.name}`, metadata: { goal_id: goal.id } });
+      pushTx(user, { type: "goal-completed", amount: current, status: "completed", note: `Goal completed: ${goal.name}`, goalId: goal.id });
+      pushNotif(user, { title: "Savings goal completed", message: `${goal.name} funded fully.` });
     }
-    persistUser(nextUser);
-    persistGoals(nextUser.id, [nextGoal, ...ls<Goal[]>(K.goals(nextUser.id), [])]);
-    pushTx(nextUser, { type: "goal-created", amount: input.target, status: "completed", note: `Goal created: ${goal.name}`, goalId: goal.id });
-    if (nextGoal.status === "completed") {
-      pushTx(nextUser, { type: "goal-completed", amount: nextGoal.saved, status: "completed", note: `Goal completed: ${goal.name}`, goalId: goal.id });
-      pushNotif(nextUser, { title: "Savings goal completed", message: `${goal.name} funded fully.` });
-    }
-    return nextGoal;
+    return goal;
   };
 
   const fundGoal: Ctx["fundGoal"] = async (id, amount) => {
     if (!user) throw new Error("Not signed in");
     if (amount <= 0) throw new Error("Enter a valid amount");
     if (user.balances.main < amount) throw new Error("Insufficient main balance");
-    const all = ls<Goal[]>(K.goals(user.id), []);
-    const g = all.find((x) => x.id === id);
+    const g = goals.find((x) => x.id === id);
     if (!g) throw new Error("Goal not found");
     if (g.status === "completed" || g.status === "cancelled") throw new Error("Goal not active");
+
     const add = Math.min(amount, g.target - g.saved);
-    const nextUser: User = {
-      ...user,
-      balances: { ...user.balances, main: user.balances.main - add, savings: user.balances.savings + add },
-    };
-    const updated: Goal = {
-      ...g,
-      saved: g.saved + add,
-      status: g.saved + add >= g.target ? "completed" : g.status,
-      history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount: add, type: "deposit" }, ...g.history],
-    };
-    persistUser(nextUser);
-    persistGoals(nextUser.id, all.map((x) => (x.id === id ? updated : x)));
-    pushTx(nextUser, { type: "savings-deposit", amount: add, from: "main", to: "savings", status: "completed", note: `Funded goal: ${g.name}`, goalId: g.id });
-    if (updated.status === "completed") {
-      pushTx(nextUser, { type: "goal-completed", amount: updated.saved, status: "completed", note: `Goal completed: ${g.name}`, goalId: g.id });
-      pushNotif(nextUser, { title: "Savings goal completed", message: `${g.name} reached its target.` });
+    const nextBalances = { ...user.balances, main: user.balances.main - add, savings: user.balances.savings + add };
+    await updateBalances(user.id, nextBalances);
+    setUser({ ...user, balances: nextBalances });
+
+    const newSaved = g.saved + add;
+    const newStatus = newSaved >= g.target ? "completed" : g.status;
+    await supabase.from("goals").update({ current: newSaved, status: newStatus }).eq("id", id);
+
+    setGoals((prev) => prev.map((x) => x.id === id ? {
+      ...x, saved: newSaved, status: newStatus,
+      history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount: add, type: "deposit" }, ...x.history],
+    } : x));
+
+    await insertTx(user.id, { type: "savings-deposit", amount: add, category: "main->savings", note: `Funded goal: ${g.name}`, metadata: { goal_id: id } });
+    pushTx(user, { type: "savings-deposit", amount: add, from: "main", to: "savings", status: "completed", note: `Funded goal: ${g.name}`, goalId: id });
+    if (newStatus === "completed") {
+      await insertTx(user.id, { type: "goal-completed", amount: newSaved, note: `Goal completed: ${g.name}`, metadata: { goal_id: id } });
+      pushTx(user, { type: "goal-completed", amount: newSaved, status: "completed", note: `Goal completed: ${g.name}`, goalId: id });
+      pushNotif(user, { title: "Savings goal completed", message: `${g.name} reached its target.` });
     }
   };
 
   const withdrawGoal: Ctx["withdrawGoal"] = async (id, amount) => {
     if (!user) throw new Error("Not signed in");
     if (amount <= 0) throw new Error("Enter a valid amount");
-    const all = ls<Goal[]>(K.goals(user.id), []);
-    const g = all.find((x) => x.id === id);
+    const g = goals.find((x) => x.id === id);
     if (!g) throw new Error("Goal not found");
     if (amount > g.saved) throw new Error("Insufficient saved amount");
-    const nextUser: User = {
-      ...user,
-      balances: { ...user.balances, main: user.balances.main + amount, savings: Math.max(0, user.balances.savings - amount) },
-    };
-    const updated: Goal = {
-      ...g,
-      saved: g.saved - amount,
-      status: g.status === "completed" && g.saved - amount < g.target ? "active" : g.status,
-      history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount, type: "withdraw" }, ...g.history],
-    };
-    persistUser(nextUser);
-    persistGoals(nextUser.id, all.map((x) => (x.id === id ? updated : x)));
-    pushTx(nextUser, { type: "savings-withdraw", amount, from: "savings", to: "main", status: "completed", note: `Withdrew from goal: ${g.name}`, goalId: g.id });
+
+    const nextBalances = { ...user.balances, main: user.balances.main + amount, savings: Math.max(0, user.balances.savings - amount) };
+    await updateBalances(user.id, nextBalances);
+    setUser({ ...user, balances: nextBalances });
+
+    const newSaved = g.saved - amount;
+    const newStatus = g.status === "completed" && newSaved < g.target ? "active" : g.status;
+    await supabase.from("goals").update({ current: newSaved, status: newStatus }).eq("id", id);
+
+    setGoals((prev) => prev.map((x) => x.id === id ? {
+      ...x, saved: newSaved, status: newStatus,
+      history: [{ id: crypto.randomUUID(), at: new Date().toISOString(), amount, type: "withdraw" }, ...x.history],
+    } : x));
+
+    await insertTx(user.id, { type: "savings-withdraw", amount, category: "savings->main", note: `Withdrew from goal: ${g.name}`, metadata: { goal_id: id } });
+    pushTx(user, { type: "savings-withdraw", amount, from: "savings", to: "main", status: "completed", note: `Withdrew from goal: ${g.name}`, goalId: id });
   };
 
   const editGoal: Ctx["editGoal"] = async (id, patch) => {
     if (!user) throw new Error("Not signed in");
-    const all = ls<Goal[]>(K.goals(user.id), []);
-    const next = all.map((g) => (g.id === id ? { ...g, ...patch } : g));
-    persistGoals(user.id, next);
+    const supaPatch: Record<string, unknown> = {};
+    if (patch.name !== undefined) supaPatch.name = patch.name;
+    if (patch.target !== undefined) supaPatch.target = patch.target;
+    if (patch.status !== undefined) supaPatch.status = patch.status;
+    await supabase.from("goals").update(supaPatch).eq("id", id);
+    setGoals((prev) => prev.map((g) => (g.id === id ? { ...g, ...patch } : g)));
   };
   const pauseGoal: Ctx["pauseGoal"] = async (id) => editGoal(id, { status: "paused" });
   const resumeGoal: Ctx["resumeGoal"] = async (id) => editGoal(id, { status: "active" });
   const deleteGoal: Ctx["deleteGoal"] = async (id) => {
     if (!user) throw new Error("Not signed in");
-    const all = ls<Goal[]>(K.goals(user.id), []);
-    const g = all.find((x) => x.id === id);
+    const g = goals.find((x) => x.id === id);
     if (g && g.saved > 0) {
-      // Return remaining to main
-      const nextUser: User = {
-        ...user,
-        balances: { ...user.balances, main: user.balances.main + g.saved, savings: Math.max(0, user.balances.savings - g.saved) },
-      };
-      persistUser(nextUser);
-      pushTx(nextUser, { type: "savings-withdraw", amount: g.saved, from: "savings", to: "main", status: "completed", note: `Goal deleted, returned to main: ${g.name}`, goalId: g.id });
+      const nextBalances = { ...user.balances, main: user.balances.main + g.saved, savings: Math.max(0, user.balances.savings - g.saved) };
+      await updateBalances(user.id, nextBalances);
+      setUser({ ...user, balances: nextBalances });
+      await insertTx(user.id, { type: "savings-withdraw", amount: g.saved, note: `Goal deleted, returned to main: ${g.name}`, metadata: { goal_id: id } });
+      pushTx(user, { type: "savings-withdraw", amount: g.saved, from: "savings", to: "main", status: "completed", note: `Goal deleted, returned to main: ${g.name}`, goalId: id });
     }
-    persistGoals(user.id, all.filter((x) => x.id !== id));
+    await supabase.from("goals").delete().eq("id", id);
+    setGoals((prev) => prev.filter((x) => x.id !== id));
   };
-
-  // Note: automatic-cadence savings (daily/weekly/monthly) will be executed by
-  // a server-side scheduler once Supabase is connected. No client-side timer.
 
   const submitLoan: Ctx["submitLoan"] = async (input) => {
     if (!user) throw new Error("Not signed in");
-    const existing = ls<Loan[]>(K.loans(user.id), []);
-    if (existing.some((l) => ["submitted", "under-review", "approved"].includes(l.status))) {
+    if (loans.some((l) => ["submitted", "under-review", "approved"].includes(l.status))) {
       throw new Error("You already have a pending loan application");
     }
     if (input.docs.ids.length < 2) throw new Error("Upload at least two identity documents");
     if (input.docs.income.length < 1) throw new Error("Upload at least one income document");
     if (input.docs.address.length < 1) throw new Error("Upload at least one address document");
     if (!input.bank.name || !input.bank.account) throw new Error("Bank details required");
+
     const apr = 12;
     const r = apr / 100 / 12;
     const monthlyPayment = +((input.amount * r) / (1 - Math.pow(1 + r, -input.termMonths))).toFixed(2);
+
+    const { data: row } = await supabase
+      .from("loans")
+      .insert({
+        user_id: user.id, amount_requested: input.amount, term_months: input.termMonths,
+        purpose: input.purpose, status: "submitted",
+        metadata: { apr, monthlyPayment, remaining: input.amount, personal: input.personal, finances: input.finances, docs: input.docs, bank: input.bank, payments: [] },
+      })
+      .select()
+      .maybeSingle();
+
     const loan: Loan = {
-      id: crypto.randomUUID(),
-      amount: input.amount,
-      purpose: input.purpose,
-      termMonths: input.termMonths,
-      apr,
-      status: "submitted",
-      submittedAt: new Date().toISOString(),
-      remaining: input.amount,
-      monthlyPayment,
-      payments: [],
-      personal: input.personal,
-      finances: input.finances,
-      docs: input.docs,
-      bank: input.bank,
+      id: row!.id, amount: input.amount, purpose: input.purpose, termMonths: input.termMonths,
+      apr, status: "submitted", submittedAt: row!.created_at, remaining: input.amount,
+      monthlyPayment, payments: [], personal: input.personal, finances: input.finances,
+      docs: input.docs, bank: input.bank,
     };
-    persistLoans(user.id, [loan, ...existing]);
+    setLoans((prev) => [loan, ...prev]);
+
+    await insertTx(user.id, { type: "loan-submitted", amount: input.amount, note: `Loan application — $${input.amount}`, metadata: { loan_id: loan.id } });
     pushTx(user, { type: "loan-submitted", amount: input.amount, status: "pending", note: `Loan application — $${input.amount}`, loanId: loan.id });
+    await supabase.from("notifications").insert({ user_id: user.id, title: "Loan application received", body: "We're reviewing your submission." });
     pushNotif(user, { title: "Loan application received", message: "We're reviewing your submission." });
-    // Review, approval, and disbursement are performed by admin/backend once
-    // Supabase is connected. Client leaves the loan as "submitted".
     return loan;
   };
 
@@ -823,28 +985,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!user) throw new Error("Not signed in");
     if (amount <= 0) throw new Error("Enter a valid amount");
     if (user.balances.main < amount) throw new Error("Insufficient main balance");
-    const all = ls<Loan[]>(K.loans(user.id), []);
-    const l = all.find((x) => x.id === id);
+    const l = loans.find((x) => x.id === id);
     if (!l || l.status !== "disbursed") throw new Error("Loan not active");
+
     const pay = Math.min(amount, l.remaining);
-    const nextUser: User = { ...user, balances: { ...user.balances, main: user.balances.main - pay } };
-    const next = new Date(); next.setMonth(next.getMonth() + 1);
-    const updated: Loan = {
-      ...l,
-      remaining: +(l.remaining - pay).toFixed(2),
-      payments: [{ at: new Date().toISOString(), amount: pay }, ...l.payments],
-      nextPaymentAt: l.remaining - pay <= 0 ? undefined : next.toISOString(),
-      status: l.remaining - pay <= 0 ? "closed" : l.status,
-    };
-    persistUser(nextUser);
-    persistLoans(nextUser.id, all.map((x) => (x.id === id ? updated : x)));
-    pushTx(nextUser, { type: "loan-payment", amount: pay, from: "main", status: "completed", note: `Loan payment${updated.status === "closed" ? " (paid off)" : ""}`, loanId: l.id });
-    pushNotif(nextUser, { title: "Payment received", message: `$${pay.toFixed(2)} applied to your loan.` });
+    const nextBalances = { ...user.balances, main: user.balances.main - pay };
+    await updateBalances(user.id, nextBalances);
+    setUser({ ...user, balances: nextBalances });
+
+    const nextRemaining = +(l.remaining - pay).toFixed(2);
+    const nextStatus: LoanStatus = nextRemaining <= 0 ? "closed" : l.status;
+    const payments = [{ at: new Date().toISOString(), amount: pay }, ...l.payments];
+    await supabase.from("loans").update({
+      status: nextStatus,
+      metadata: { apr: l.apr, monthlyPayment: l.monthlyPayment, remaining: nextRemaining, payments, personal: l.personal, finances: l.finances, docs: l.docs, bank: l.bank },
+    }).eq("id", id);
+
+    setLoans((prev) => prev.map((x) => x.id === id ? { ...x, remaining: nextRemaining, status: nextStatus, payments } : x));
+
+    await insertTx(user.id, { type: "loan-payment", amount: pay, note: `Loan payment${nextStatus === "closed" ? " (paid off)" : ""}`, metadata: { loan_id: id } });
+    pushTx(user, { type: "loan-payment", amount: pay, from: "main", status: "completed", note: `Loan payment${nextStatus === "closed" ? " (paid off)" : ""}`, loanId: id });
+    await supabase.from("notifications").insert({ user_id: user.id, title: "Payment received", body: `$${pay.toFixed(2)} applied to your loan.` });
+    pushNotif(user, { title: "Payment received", message: `$${pay.toFixed(2)} applied to your loan.` });
   };
 
   const payoffLoan: Ctx["payoffLoan"] = async (id) => {
-    if (!user) throw new Error("Not signed in");
-    const l = ls<Loan[]>(K.loans(user.id), []).find((x) => x.id === id);
+    const l = loans.find((x) => x.id === id);
     if (!l) throw new Error("Loan not found");
     return repayLoan(id, l.remaining);
   };
