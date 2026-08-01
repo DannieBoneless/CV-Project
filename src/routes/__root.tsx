@@ -133,7 +133,7 @@ function RootComponent() {
         {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />
         <CookieBanner />
-        <WhatsAppFab />
+        {/* <WhatsAppFab /> */}
         <SmartsuppChat />
         <Toaster position="top-center" richColors />
       </AppProvider>
