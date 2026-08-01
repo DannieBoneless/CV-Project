@@ -14,6 +14,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { AppProvider } from "@/context/app-context";
 import { CookieBanner } from "@/components/cookie-banner";
 import { WhatsAppFab } from "@/components/whatsapp-fab";
+import { SmartsuppChat } from "@/components/smartsupp-chat";
 import { Preloader } from "@/components/preloader";
 import { Toaster } from "sonner";
 
@@ -133,6 +134,7 @@ function RootComponent() {
         <Outlet />
         <CookieBanner />
         <WhatsAppFab />
+        <SmartsuppChat />
         <Toaster position="top-center" richColors />
       </AppProvider>
     </QueryClientProvider>
