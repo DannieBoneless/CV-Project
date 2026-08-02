@@ -24,11 +24,11 @@ function Store() {
   };
   return (
     <DashboardShell title="Store">
-      <div className="mb-4 rounded-2xl gradient-primary p-4 text-primary-foreground">
-        <div className="text-xs opacity-90">CrestVest card balance</div>
-        <div className="text-2xl font-bold">{fmt(user.cardBalance)}</div>
-        <div className="text-xs opacity-80">Card-only purchases — no external checkout.</div>
-      </div>
+     <div className="mb-4 rounded-2xl gradient-primary p-4 text-primary-foreground">
+  <div className="text-xs opacity-90">Main balance</div>
+  <div className="text-2xl font-bold">{fmt(user.balances.main)}</div>
+  <div className="text-xs opacity-80">Purchases are deducted from your main balance.</div>
+</div>
       <div className="grid gap-3 sm:grid-cols-2">
         {ITEMS.map((it) => (
           <div key={it.id} className="glass rounded-2xl p-5">

@@ -690,10 +690,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const storePurchase: Ctx["storePurchase"] = async (item, amount) => {
     if (!user) throw new Error("Not signed in");
-    if (user.cardBalance < amount) throw new Error("Insufficient card balance");
-    const next: User = { ...user, cardBalance: user.cardBalance - amount };
-    persistUser(next);
-    pushTx(next, { type: "store", amount, status: "completed", note: `Store: ${item}` });
+    if (user.balances.main < amount) throw new Error("Insufficient main balance");
+    const nextBalances = { ...user.balances, main: user.balances.main - amount };
+    const row = await updateBalances(user.id, nextBalances);
+    if (!row) throw new Error("Failed to update balance");
+    setUser({ ...user, balances: nextBalances });
+    await insertTx(user.id, { type: "store", amount, category: "main", note: `Store: ${item}` });
+    pushTx(user, { type: "store", amount, from: "main", status: "completed", note: `Store: ${item}` });
   };
 
   const markAllNotifsRead = async () => {
