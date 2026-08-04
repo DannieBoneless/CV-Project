@@ -29,6 +29,27 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  const handleForgotPassword = async () => {
+    if (!email) {
+      toast.error("Enter your email above first");
+      return;
+    }
+    setResetBusy(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+      toast.success("Password reset link sent — check your email.");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setBusy(true);
@@ -56,7 +77,17 @@ function LoginForm() {
       <form onSubmit={submit} className="glass rounded-2xl p-6 space-y-4">
         <h1 className="text-2xl font-bold">Welcome back</h1>
         <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" required />
-        <Field label="Password" type="password" value={pw} onChange={setPw} autoComplete="current-password" required />
+        <div>
+          <Field label="Password" type="password" value={pw} onChange={setPw} autoComplete="current-password" required />
+          <button
+            type="button"
+            onClick={handleForgotPassword}
+            disabled={resetBusy}
+            className="mt-1 text-xs text-primary underline-offset-4 hover:underline disabled:opacity-60"
+          >
+            {resetBusy ? "Sending…" : "Forgot password?"}
+          </button>
+        </div>
         <button disabled={busy} className="w-full rounded-xl gradient-primary py-3 font-medium text-primary-foreground disabled:opacity-60">
           {busy ? "Signing in…" : "Sign in"}
         </button>

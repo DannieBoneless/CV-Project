@@ -29,6 +29,7 @@ import { Route as LoansRouteImport } from './routes/loans'
 import { Route as NotificationsRouteImport } from './routes/notifications'
 import { Route as PressRouteImport } from './routes/press'
 import { Route as PrivacyRouteImport } from './routes/privacy'
+import { Route as ResetPasswordRouteImport } from './routes/reset-password'
 import { Route as SavingsRouteImport } from './routes/savings'
 import { Route as SendRouteImport } from './routes/send'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -140,6 +141,11 @@ const PrivacyRoute = PrivacyRouteImport.update({
   path: '/privacy',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ResetPasswordRoute = ResetPasswordRouteImport.update({
+  id: '/reset-password',
+  path: '/reset-password',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SavingsRoute = SavingsRouteImport.update({
   id: '/savings',
   path: '/savings',
@@ -212,6 +218,7 @@ export interface FileRoutesByFullPath {
   '/notifications': typeof NotificationsRoute
   '/press': typeof PressRoute
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/savings': typeof SavingsRoute
   '/send': typeof SendRoute
   '/settings': typeof SettingsRoute
@@ -244,6 +251,7 @@ export interface FileRoutesByTo {
   '/notifications': typeof NotificationsRoute
   '/press': typeof PressRoute
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/savings': typeof SavingsRoute
   '/send': typeof SendRoute
   '/settings': typeof SettingsRoute
@@ -277,6 +285,7 @@ export interface FileRoutesById {
   '/notifications': typeof NotificationsRoute
   '/press': typeof PressRoute
   '/privacy': typeof PrivacyRoute
+  '/reset-password': typeof ResetPasswordRoute
   '/savings': typeof SavingsRoute
   '/send': typeof SendRoute
   '/settings': typeof SettingsRoute
@@ -311,6 +320,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/press'
     | '/privacy'
+    | '/reset-password'
     | '/savings'
     | '/send'
     | '/settings'
@@ -343,6 +353,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/press'
     | '/privacy'
+    | '/reset-password'
     | '/savings'
     | '/send'
     | '/settings'
@@ -375,6 +386,7 @@ export interface FileRouteTypes {
     | '/notifications'
     | '/press'
     | '/privacy'
+    | '/reset-password'
     | '/savings'
     | '/send'
     | '/settings'
@@ -408,6 +420,7 @@ export interface RootRouteChildren {
   NotificationsRoute: typeof NotificationsRoute
   PressRoute: typeof PressRoute
   PrivacyRoute: typeof PrivacyRoute
+  ResetPasswordRoute: typeof ResetPasswordRoute
   SavingsRoute: typeof SavingsRoute
   SendRoute: typeof SendRoute
   SettingsRoute: typeof SettingsRoute
@@ -562,6 +575,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PrivacyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/reset-password': {
+      id: '/reset-password'
+      path: '/reset-password'
+      fullPath: '/reset-password'
+      preLoaderRoute: typeof ResetPasswordRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/savings': {
       id: '/savings'
       path: '/savings'
@@ -656,6 +676,7 @@ const rootRouteChildren: RootRouteChildren = {
   NotificationsRoute: NotificationsRoute,
   PressRoute: PressRoute,
   PrivacyRoute: PrivacyRoute,
+  ResetPasswordRoute: ResetPasswordRoute,
   SavingsRoute: SavingsRoute,
   SendRoute: SendRoute,
   SettingsRoute: SettingsRoute,
