@@ -611,18 +611,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const sendToUser: Ctx["sendToUser"] = async (email, amount) => {
     if (!user) throw new Error("Not signed in");
-    if (amount <= 0) throw new Error("Enter a valid amount");
-    if (user.balances.main < amount) throw new Error("Insufficient balance");
-    const all = loadUsers();
-    const recip = all[email.toLowerCase()];
-    if (!recip) throw new Error("No CrestVest user with that email");
-    const meNext: User = { ...user, balances: { ...user.balances, main: user.balances.main - amount } };
-    const rNext: User = { ...recip, balances: { ...recip.balances, main: recip.balances.main + amount } };
-    all[meNext.id] = meNext;
-    all[rNext.id] = rNext;
-    saveUsers(all);
-    setUser({ ...meNext });
-    pushTx(meNext, { type: "send", amount, from: "main", status: "completed", note: `Sent to ${email}` });
+    const { error } = await supabase.rpc("transfer_to_user", {
+      recipient_email: email.toLowerCase(),
+      transfer_amount: amount,
+    });
+    if (error) throw new Error(error.message);
+    const nextBalances = { ...user.balances, main: user.balances.main - amount };
+    setUser({ ...user, balances: nextBalances });
+    pushTx(user, { type: "send", amount, from: "main", status: "completed", note: `Sent to ${email}` });
   };
 
   const externalSend: Ctx["externalSend"] = async (recipient, bank, userEmail, amount) => {
