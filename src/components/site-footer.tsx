@@ -20,7 +20,7 @@ export function SiteFooter() {
         <div className="mt-10 flex items-center justify-center gap-4">
           {[
             { i: Facebook, label: "Facebook", href: "https://facebook.com/" },
-            { i: Twitter, label: "Twitter / X", href: "https://x.com/" },
+            { i: Twitter, label: "Twitter / X", href: "https://x.com/crestvestincc?s=11" },
             { i: Instagram, label: "Instagram", href: "https://instagram.com/" },
             { i: Music2, label: "TikTok", href: "https://tiktok.com/" },
           ].map(({ i: I, label, href }) => (
