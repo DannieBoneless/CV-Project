@@ -29,26 +29,11 @@ function LoginForm() {
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [busy, setBusy] = useState(false);
-  const [resetBusy, setResetBusy] = useState(false);
 
-  const handleForgotPassword = async () => {
-    if (!email) {
-      toast.error("Enter your email above first");
-      return;
-    }
-    setResetBusy(true);
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-      if (error) throw error;
-      toast.success("Password reset link sent — check your email.");
-    } catch (err) {
-      toast.error((err as Error).message);
-    } finally {
-      setResetBusy(false);
-    }
-  };
+  const [showForgot, setShowForgot] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +52,54 @@ function LoginForm() {
       toast.error((err as Error).message);
     } finally { setBusy(false); }
   };
+
+  const submitReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetEmail) return;
+    setResetBusy(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(resetEmail, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      if (error) throw error;
+      setResetSent(true);
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setResetBusy(false);
+    }
+  };
+
+  if (showForgot) {
+    return (
+      <div className="animate-fade-up">
+        <form onSubmit={submitReset} className="glass rounded-2xl p-6 space-y-4">
+          <button
+            type="button"
+            onClick={() => { setShowForgot(false); setResetSent(false); setResetEmail(""); }}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            ← Back to sign in
+          </button>
+          <h1 className="text-2xl font-bold">Reset your password</h1>
+          {resetSent ? (
+            <p className="rounded-lg bg-primary/10 p-3 text-sm text-muted-foreground">
+              If an account exists for <span className="font-medium text-foreground">{resetEmail}</span>, a reset link has been sent. Check your inbox.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">Enter your email and we'll send you a link to reset your password.</p>
+              <Field label="Email" type="email" value={resetEmail} onChange={setResetEmail} autoComplete="email" required />
+              <button disabled={resetBusy} className="w-full rounded-xl gradient-primary py-3 font-medium text-primary-foreground disabled:opacity-60">
+                {resetBusy ? "Sending…" : "Send reset link"}
+              </button>
+            </>
+          )}
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="animate-fade-up">
       <div className="mb-4 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm">
@@ -81,11 +114,10 @@ function LoginForm() {
           <Field label="Password" type="password" value={pw} onChange={setPw} autoComplete="current-password" required />
           <button
             type="button"
-            onClick={handleForgotPassword}
-            disabled={resetBusy}
-            className="mt-1 text-xs text-primary underline-offset-4 hover:underline disabled:opacity-60"
+            onClick={() => setShowForgot(true)}
+            className="mt-1 text-xs text-primary underline-offset-4 hover:underline"
           >
-            {resetBusy ? "Sending…" : "Forgot password?"}
+            Forgot password?
           </button>
         </div>
         <button disabled={busy} className="w-full rounded-xl gradient-primary py-3 font-medium text-primary-foreground disabled:opacity-60">
