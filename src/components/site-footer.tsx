@@ -21,7 +21,7 @@ export function SiteFooter() {
           {[
             { i: Facebook, label: "Facebook", href: "https://facebook.com/" },
             { i: Twitter, label: "Twitter / X", href: "https://x.com/crestvestincc?s=11" },
-            { i: Instagram, label: "Instagram", href: "https://instagram.com/" },
+            { i: Instagram, label: "Instagram", href: "https://www.instagram.com/crestvestinc?igsh=MXRqd21kNXBtcnlrNA%3D%3D&utm_source=qr" },
             { i: Music2, label: "TikTok", href: "https://tiktok.com/" },
           ].map(({ i: I, label, href }) => (
             <a
