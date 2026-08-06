@@ -4,7 +4,7 @@ import { MarketingShell } from "@/components/marketing-shell";
 import { useApp } from "@/context/app-context";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, Eye, EyeOff } from "lucide-react";
 
 export const Route = createFileRoute("/auth")({ component: AuthPage });
 
@@ -140,18 +140,33 @@ function Field({
   label: string; value: string; onChange: (v: string) => void;
   type?: string; required?: boolean; autoComplete?: string; placeholder?: string;
 }) {
+  const [show, setShow] = useState(false);
+  const isPassword = type === "password";
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-muted-foreground">{label}</span>
-      <input
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        required={required}
-        autoComplete={autoComplete}
-        placeholder={placeholder}
-        className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none ring-primary transition focus:border-primary focus:ring-2"
-      />
+      <div className="relative">
+        <input
+          type={isPassword && show ? "text" : type}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          required={required}
+          autoComplete={autoComplete}
+          placeholder={placeholder}
+          className="w-full rounded-lg border border-input bg-background px-3 py-2 pr-10 text-sm outline-none ring-primary transition focus:border-primary focus:ring-2"
+        />
+        {isPassword && (
+          <button
+            type="button"
+            onClick={() => setShow((s) => !s)}
+            tabIndex={-1}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            aria-label={show ? "Hide password" : "Show password"}
+          >
+            {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
+        )}
+      </div>
     </label>
   );
 }
