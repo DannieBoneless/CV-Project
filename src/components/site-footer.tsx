@@ -42,7 +42,7 @@ export function SiteFooter() {
           ))}
         </div>
         <p className="mt-8 text-center text-xs text-muted-foreground">
-          © 2025 CrestVest Inc. All rights reserved. Funds insured up to $250,000 · FDIC Member · Equal Housing Lender
+          © 2025 CrestVest Inc. All rights reserved. Built with advanced security and privacy protection · FDIC Member · Equal Housing Lender
         </p>
       </div>
     </footer>
