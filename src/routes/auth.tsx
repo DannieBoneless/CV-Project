@@ -102,11 +102,13 @@ function LoginForm() {
 
   return (
     <div className="animate-fade-up">
+      {/* 
       <div className="mb-4 rounded-xl border border-primary/30 bg-primary/5 p-4 text-sm">
         <div className="font-semibold text-primary">Test credentials</div>
         <div className="mt-1 text-muted-foreground">Email: <span className="font-mono">user@invest.com</span></div>
         <div className="text-muted-foreground">Password: <span className="font-mono">password123</span></div>
       </div>
+      */}
       <form onSubmit={submit} className="glass rounded-2xl p-6 space-y-4">
         <h1 className="text-2xl font-bold">Welcome back</h1>
         <Field label="Email" type="email" value={email} onChange={setEmail} autoComplete="email" required />
