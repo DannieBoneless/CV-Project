@@ -36,6 +36,7 @@ export interface User {
   cardBalance: number;
   hasDeposited: boolean;
   createdAt: string;
+  avatarUrl?: string;
 }
 
 export type TxType =
@@ -182,6 +183,11 @@ async function buildUserFromSupabase(authUser: {
     balanceRow = created;
   }
 
+  let avatarUrl: string | undefined;
+  if (profile?.avatar_url) {
+    const { data: signed } = await supabase.storage.from("avatars").createSignedUrl(profile.avatar_url, 3600);
+    avatarUrl = signed?.signedUrl;
+  }
   return {
     id: authUser.id,
     email: authUser.email,
@@ -201,6 +207,7 @@ async function buildUserFromSupabase(authUser: {
     cardBalance: 0,
     hasDeposited: (balanceRow?.main ?? 0) > 0,
     createdAt: profile?.created_at || new Date().toISOString(),
+    avatarUrl,
   };
 }
 
@@ -343,6 +350,7 @@ interface Ctx {
   submitLoan: (input: Omit<Loan, "id" | "status" | "submittedAt" | "remaining" | "monthlyPayment" | "payments" | "apr">) => Promise<Loan>;
   repayLoan: (id: string, amount: number) => Promise<void>;
   payoffLoan: (id: string) => Promise<void>;
+  updateAvatar: (path: string) => Promise<void>;
 }
 
 const AppCtx = createContext<Ctx | null>(null);
@@ -1014,6 +1022,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return repayLoan(id, l.remaining);
   };
 
+  const updateAvatar = async (path: string) => {
+    if (!user) throw new Error("Not signed in");
+    const { data: signed } = await supabase.storage.from("avatars").createSignedUrl(path, 3600);
+    setUser({ ...user, avatarUrl: signed?.signedUrl });
+  };
+
   const value = useMemo<Ctx>(
     () => ({
       user,
@@ -1051,6 +1065,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       submitLoan,
       repayLoan,
       payoffLoan,
+      updateAvatar,
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [user, ready, txs, vaults, notifs, trades, goals, loans, theme],

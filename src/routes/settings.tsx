@@ -9,7 +9,7 @@ import { toast } from "sonner";
 export const Route = createFileRoute("/settings")({ component: Settings });
 
 function Settings() {
-  const { user, theme, toggleTheme, logout } = useApp();
+  const { user, theme, toggleTheme, logout, updateAvatar } = useApp();
   const nav = useNavigate();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -52,6 +52,7 @@ function Settings() {
       await supabase.from("profiles").update({ avatar_url: path }).eq("id", uid);
       const { data: signed } = await supabase.storage.from("avatars").createSignedUrl(path, 3600);
       if (signed?.signedUrl) setAvatarUrl(signed.signedUrl);
+      await updateAvatar(path);
       toast.success("Profile picture updated");
     } catch (e) {
       toast.error((e as Error).message);

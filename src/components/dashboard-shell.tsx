@@ -63,9 +63,13 @@ export function DashboardShell({ children, title }: { children: ReactNode; title
               <div className="font-medium">{user.firstName} {user.lastName}</div>
               <div className="text-muted-foreground">{user.email}</div>
             </div>
-            <div className="flex h-9 w-9 items-center justify-center rounded-full gradient-primary font-semibold text-primary-foreground">
-              {(user.firstName?.[0] || user.email[0]).toUpperCase()}
-            </div>
+            {user.avatarUrl ? (
+              <img src={user.avatarUrl} alt="Profile" className="h-9 w-9 rounded-full object-cover shadow-elegant" />
+            ) : (
+              <div className="flex h-9 w-9 items-center justify-center rounded-full gradient-primary font-semibold text-primary-foreground">
+                {(user.firstName?.[0] || user.email[0]).toUpperCase()}
+              </div>
+            )}
           </div>
         </div>
       </header>
